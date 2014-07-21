@@ -1,0 +1,43 @@
+-- Load the tweets file
+tweets = load 'tweetsp' using PigStorage('\t') as (id:long,timestamp:chararray,tweet_count:int,text:chararray,screen_name:chararray,followers_count:chararray,time_zone:chararray);
+
+tweets2 = foreach tweets generate id,  SUBSTRING(timestamp,0,10) as timestamp, text;
+
+tweets3 = foreach tweets2 generate id, GetDay(ToDate(timestamp, 'YYYY-MM-DD')) as day, text;
+
+
+-- Load the dictionary file, which contains the list of positive and negative words
+dictionary = load 'dictionary.tsv' using PigStorage('\t')  AS (type:chararray,length:int,word:chararray,pos:chararray,stemmed:chararray,polarity:chararray);  
+
+-- First we will tokenize the tweets into several words and flatten it
+twords = foreach tweets3 generate id, FLATTEN( TOKENIZE(text) ) AS word, day;
+
+-- Join each words with dictionary file 
+tsentiment = join twords by word left outer, dictionary by word using 'replicated';
+
+-- Classify each word as either positive or negative word
+wscore = foreach tsentiment generate twords::id as id, 
+                             (CASE dictionary::polarity WHEN 'positive' THEN 1 WHEN 'negative' THEN -1 else 0 END) as score, twords::day;
+
+-- Group all word sentiments by each tweet ( how many positive or negative words )
+tgroup = group wscore by id;
+
+-- Sum the sentiments scores for each tweets
+tscore = foreach tgroup generate group as id, SUM(wscore.score)  as final, FLATTEN(wscore.(twords::day)) as day;
+
+-- Classify each tweet as either positive or negative tweet
+tclassify = foreach tscore generate id,  ( (final > 0)? 1 : 0 ) as positive, ( (final < 0)? 1 : 0 )  as negative, day; 
+
+
+-- Group the tweets by day
+groupByDay = group tclassify by day;
+
+
+-- Find out how many positive and negarive tweets per each day
+sentimentByDay1 = foreach groupByDay generate group, SUM( tclassify.positive ), SUM ( tclassify.negative);
+sentimentByDay = foreach sentimentByDay1 generate group, $1, $2, $1-$2;
+
+### Write the final output
+
+store sentimentByDay into '/root/workshop/data/sentiments';
+
